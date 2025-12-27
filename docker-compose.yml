@@ -1,0 +1,113 @@
+﻿services:
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: osrm-poland
+    volumes:
+      - osrm-data:/data
+    command: >
+      sh -c "until [ -f /data/.osrm-ready ]; do
+        echo 'Waiting for OSRM data...';
+        sleep 5;
+      done;
+      osrm-routed --algorithm mld /data/poland-latest.osrm"
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    depends_on: []
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc 'echo > /dev/tcp/localhost/5000'"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+
+  osrm-downloader:
+    image: curlimages/curl:8.5.0
+    container_name: osrm-downloader
+    user: "0:0"
+    profiles: ["init"]
+    volumes:
+      - osrm-data:/data
+    environment:
+      OSRM_PBF_URL: "https://download.geofabrik.de/europe/poland-latest.osm.pbf"
+    command: >
+      sh -c "set -e;
+      ls -la /data || true;
+      if [ -f /data/poland-latest.osm.pbf ]; then
+      echo 'PBF already present.'; exit 0; fi;
+      echo 'Downloading PBF...';
+      while true; do
+        rm -f /data/poland-latest.osm.pbf;
+        curl -fL --retry 3 --retry-delay 5 -o /data/poland-latest.osm.pbf $$OSRM_PBF_URL || true;
+        size=$$(stat -c%s /data/poland-latest.osm.pbf 2>/dev/null || echo 0);
+        if [ $$size -gt 1000000 ]; then
+          echo \"Downloaded $$size bytes\";
+          break;
+        fi;
+        echo \"Download too small ($$size bytes), retrying in 10s...\";
+        sleep 10;
+      done;
+      ls -la /data"
+    restart: "no"
+
+  osrm-prepare:
+    image: osrm/osrm-backend:latest
+    container_name: osrm-prepare
+    volumes:
+      - osrm-data:/data
+    profiles: ["init"]
+    command: >
+      sh -c "if [ ! -f /data/poland-latest.osrm.edges ]; then
+      echo 'Preparing OSRM data...';
+      rm -f /data/poland-latest.osrm*;
+      osrm-extract -p /opt/car.lua /data/poland-latest.osm.pbf &&
+      osrm-partition /data/poland-latest.osrm &&
+      osrm-customize /data/poland-latest.osrm;
+      fi;
+      touch /data/.osrm-ready"
+    restart: "no"
+
+  backend:
+    image: k0f1/foxmapper-backend:latest
+    ports:
+      - "5286:5286"
+    environment:
+      ASPNETCORE_URLS: "http://0.0.0.0:5286"
+      ConnectionStrings__DefaultConnection: "Data Source=/app/data/foxmapper.db"
+      Osrm__BaseUrl: "http://osrm:5000"
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      osrm:
+        condition: service_healthy
+
+  frontend:
+    image: k0f1/foxmapper-frontend:latest
+    ports:
+      - "5173:80"
+      - "443:443"
+    volumes:
+      - nginx-certs:/etc/nginx/certs
+    depends_on:
+      - backend
+
+  certgen:
+    image: alpine:3.20
+    container_name: certgen
+    volumes:
+      - nginx-certs:/certs
+    profiles: ["init"]
+    command: >
+      sh -c "if [ ! -f /certs/privkey.pem ]; then
+      apk add --no-cache openssl &&
+      openssl req -x509 -newkey rsa:2048 -nodes
+      -keyout /certs/privkey.pem
+      -out /certs/fullchain.pem
+      -days 365
+      -subj /CN=localhost;
+      fi"
+    restart: "no"
+
+volumes:
+  backend-data:
+  osrm-data:
+  nginx-certs:
