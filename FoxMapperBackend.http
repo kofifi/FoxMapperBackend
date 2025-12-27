@@ -1,0 +1,6 @@
+@FoxMapperBackend_HostAddress = http://localhost:5286
+
+GET {{FoxMapperBackend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

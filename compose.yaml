@@ -1,0 +1,6 @@
+﻿services:
+  foxmapperbackend:
+    image: foxmapperbackend
+    build:
+      context: .
+      dockerfile: Dockerfile
